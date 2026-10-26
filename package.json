@@ -1,0 +1,25 @@
+{
+  "name": "replyspark-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ReplySpark - AI-Powered Google Review Management SaaS",
+  "author": "ashokadvait",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @replyspark/api dev\" \"pnpm --filter @replyspark/worker dev\" \"pnpm --filter @replyspark/web dev\"",
+    "dev:api": "pnpm --filter @replyspark/api dev",
+    "dev:worker": "pnpm --filter @replyspark/worker dev",
+    "dev:web": "pnpm --filter @replyspark/web dev",
+    "build": "pnpm --filter @replyspark/shared build && pnpm --filter @replyspark/db generate && pnpm -r --filter=!replyspark-monorepo build",
+    "db:generate": "pnpm --filter @replyspark/db generate",
+    "db:push": "pnpm --filter @replyspark/db push",
+    "db:seed": "pnpm --filter @replyspark/db seed",
+    "db:studio": "pnpm --filter @replyspark/db studio",
+    "services:up": "docker start replyspark-postgres replyspark-redis 2>/dev/null || (docker run -d --name replyspark-postgres -e POSTGRES_USER=replyspark -e POSTGRES_PASSWORD=replyspark_secret -e POSTGRES_DB=replyspark -p 5432:5432 postgres:16-alpine && docker run -d --name replyspark-redis -p 6379:6379 redis:7-alpine)",
+    "services:down": "docker stop replyspark-postgres replyspark-redis"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

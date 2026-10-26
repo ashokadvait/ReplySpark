@@ -34,3 +34,6 @@ Thumbs.db
 *.sqlite-journal
 prisma/*.db
 .turbo/
+
+#documents
+docs/

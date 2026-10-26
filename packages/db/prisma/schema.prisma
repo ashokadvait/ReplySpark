@@ -1,0 +1,356 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  REVIEWER
+  STAFF
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  EXPIRED
+  ERROR
+}
+
+enum WorkflowStatus {
+  SYNCED
+  DRAFT_PENDING
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  REGENERATING
+  PUBLISH_QUEUED
+  PUBLISHED
+  PUBLISH_FAILED
+}
+
+enum QualityStatus {
+  PASSED
+  FLAGGED_WARNING
+  ESCALATED
+}
+
+enum FeedbackCategory {
+  WRONG_TONE
+  TOO_GENERIC
+  TOO_LONG
+  TOO_SHORT
+  REPEATS_CUSTOMER
+  UNSUPPORTED_PROMISE
+  MISSES_COMPLAINT
+  INCORRECT_INFO
+  UNWANTED_WORDING
+  OTHER
+}
+
+enum PreferenceScope {
+  ORGANIZATION
+  LOCATION
+  ONE_TIME
+}
+
+enum PreferenceStatus {
+  CANDIDATE
+  AWAITING_CONFIRMATION
+  ACTIVE
+  DISABLED
+  REJECTED
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships  OrganizationMember[]
+  approvals    ReplyApproval[]
+  feedbacks    ReviewFeedback[]
+  preferences  AiPreference[]       @relation("CreatedPreferences")
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members           OrganizationMember[]
+  googleConnections GoogleConnection[]
+  locations         BusinessLocation[]
+  reviews           Review[]
+  replyDrafts       ReplyDraft[]
+  replyApprovals    ReplyApproval[]
+  reviewFeedbacks   ReviewFeedback[]
+  aiPreferences     AiPreference[]
+  promptVersions    PromptVersion[]
+  publicationJobs   PublicationJob[]
+  auditLogs         AuditLog[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String           @id @default(uuid())
+  organizationId String
+  userId         String
+  role           UserRole         @default(REVIEWER)
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model GoogleConnection {
+  id                   String           @id @default(uuid())
+  organizationId       String
+  googleSubjectId      String
+  accountEmail         String?
+  accountName          String?
+  encryptedRefreshToken String
+  grantedScopes        String[]         @default([])
+  connectionStatus     ConnectionStatus @default(CONNECTED)
+  tokenExpiresAt       DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  locations    BusinessLocation[]
+
+  @@index([organizationId])
+  @@map("google_connections")
+}
+
+model BusinessLocation {
+  id                          String           @id @default(uuid())
+  organizationId              String
+  googleConnectionId          String?
+  googleAccountResourceName   String
+  googleLocationResourceName  String
+  displayName                 String
+  address                     String?
+  timezone                    String           @default("UTC")
+  connectionStatus            ConnectionStatus @default(CONNECTED)
+  lastSyncAt                  DateTime?
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  googleConnection GoogleConnection? @relation(fields: [googleConnectionId], references: [id], onDelete: SetNull)
+  reviews          Review[]
+  aiPreferences    AiPreference[]
+
+  @@unique([organizationId, googleLocationResourceName])
+  @@index([organizationId])
+  @@index([googleConnectionId])
+  @@map("business_locations")
+}
+
+model Review {
+  id                        String         @id @default(uuid())
+  organizationId            String
+  businessLocationId        String
+  googleReviewResourceName  String
+  rating                    Int
+  reviewText                String?
+  reviewerDisplayName       String?
+  reviewerPhotoUrl          String?
+  reviewCreatedAt           DateTime
+  googleUpdatedAt           DateTime?
+  ownerReplyText            String?
+  ownerReplyCommittedAt     DateTime?
+  workflowStatus            WorkflowStatus @default(SYNCED)
+  lastSyncedAt              DateTime       @default(now())
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessLocation BusinessLocation @relation(fields: [businessLocationId], references: [id], onDelete: Cascade)
+  replyDrafts      ReplyDraft[]
+
+  @@unique([businessLocationId, googleReviewResourceName])
+  @@index([organizationId, workflowStatus])
+  @@index([businessLocationId])
+  @@index([rating])
+  @@index([reviewCreatedAt])
+  @@map("reviews")
+}
+
+model ReplyDraft {
+  id                  String        @id @default(uuid())
+  organizationId      String
+  reviewId            String
+  generatedText       String
+  finalText           String?
+  modelProvider       String        @default("google-gemini")
+  modelName           String        @default("gemini-1.5-flash")
+  promptVersion       String        @default("v1.0")
+  preferenceVersion   String?
+  qualityStatus       QualityStatus @default(PASSED)
+  qualityNotes        String?
+  suggestedEscalation Boolean       @default(false)
+  createdBy           String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  review       Review           @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  approvals    ReplyApproval[]
+  feedbacks    ReviewFeedback[]
+  publicationJobs PublicationJob[]
+
+  @@index([organizationId])
+  @@index([reviewId])
+  @@map("reply_drafts")
+}
+
+model ReplyApproval {
+  id               String    @id @default(uuid())
+  organizationId   String
+  replyDraftId     String
+  approvedBy       String
+  approvedTextHash String
+  approvedAt       DateTime  @default(now())
+  revokedAt        DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  replyDraft   ReplyDraft   @relation(fields: [replyDraftId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [approvedBy], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([replyDraftId])
+  @@map("reply_approvals")
+}
+
+model ReviewFeedback {
+  id                    String           @id @default(uuid())
+  organizationId        String
+  replyDraftId          String
+  feedbackCategory      FeedbackCategory
+  feedbackText          String?
+  generatedTextSnapshot String
+  correctedText         String?
+  scope                 PreferenceScope  @default(ORGANIZATION)
+  createdBy             String
+  createdAt             DateTime         @default(now())
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  replyDraft   ReplyDraft     @relation(fields: [replyDraftId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  preferences  AiPreference[]
+
+  @@index([organizationId])
+  @@index([replyDraftId])
+  @@map("review_feedback")
+}
+
+model AiPreference {
+  id                 String           @id @default(uuid())
+  organizationId     String
+  businessLocationId String?
+  ruleText           String
+  ruleCategory       String           @default("TONE_STYLE")
+  sourceFeedbackId   String?
+  status             PreferenceStatus @default(ACTIVE)
+  createdBy          String
+  approvedBy         String?
+  version            Int              @default(1)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessLocation BusinessLocation? @relation(fields: [businessLocationId], references: [id], onDelete: Cascade)
+  sourceFeedback   ReviewFeedback?   @relation(fields: [sourceFeedbackId], references: [id], onDelete: SetNull)
+  creator          User              @relation("CreatedPreferences", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([businessLocationId])
+  @@map("ai_preferences")
+}
+
+model PromptVersion {
+  id                String   @id @default(uuid())
+  organizationId    String?
+  version           String
+  configurationJson Json
+  status            String   @default("ACTIVE")
+  createdAt         DateTime @default(now())
+  createdBy         String?
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("prompt_versions")
+}
+
+model PublicationJob {
+  id               String    @id @default(uuid())
+  organizationId   String
+  replyDraftId     String
+  status           JobStatus @default(PENDING)
+  idempotencyKey   String    @unique
+  attemptCount     Int       @default(0)
+  lastErrorCode    String?
+  lastErrorMessage String?
+  publishedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  replyDraft   ReplyDraft   @relation(fields: [replyDraftId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([replyDraftId])
+  @@map("publication_jobs")
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  resourceType   String
+  resourceId     String?
+  metadataJson   Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser    User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, action])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}
