@@ -8,6 +8,7 @@ import { FeedbackModal } from '@/components/FeedbackModal';
 import { PreferencesView } from '@/components/PreferencesView';
 import { LocationsView } from '@/components/LocationsView';
 import { AuditView } from '@/components/AuditView';
+import { AuthModal } from '@/components/AuthModal';
 import { ApiClient } from '@/lib/api';
 import { Search, Filter, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
 
@@ -22,6 +23,10 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [googleStatus, setGoogleStatus] = useState<any>(null);
   const [userName, setUserName] = useState('Ashok Advait');
+  const [userEmail, setUserEmail] = useState('');
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const [currentOrgId, setCurrentOrgId] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -43,24 +48,89 @@ export default function HomePage() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Ensure user is authenticated (auto-login demo user if no token)
-  const initAuth = async () => {
+  const loadOrganizations = async () => {
     try {
-      if (!localStorage.getItem('replyspark_token')) {
-        await ApiClient.login('ashok@advaitlabs.com', 'password123');
+      const orgRes = await ApiClient.getOrganizations();
+      const orgs = orgRes.organizations || [];
+      setOrganizations(orgs);
+      const active = orgs.find((o) => o.isCurrent) || orgs[0];
+      if (active) {
+        setCurrentOrgId(active.id);
+        ApiClient.setSelectedOrgId(active.id);
+      }
+    } catch (err) {
+      console.error('Error fetching organizations', err);
+    }
+  };
+
+  const handleSelectOrganization = async (orgId: string) => {
+    setCurrentOrgId(orgId);
+    ApiClient.setSelectedOrgId(orgId);
+    setSelectedLocationId('ALL');
+    setIsLoading(true);
+    await loadData();
+    await loadOrganizations();
+    showToast('Switched organization');
+  };
+
+  const handleCreateOrganization = async (name: string) => {
+    const res = await ApiClient.createOrganization(name);
+    if (res.organization?.id) {
+      ApiClient.setSelectedOrgId(res.organization.id);
+      setCurrentOrgId(res.organization.id);
+      setSelectedLocationId('ALL');
+      setIsLoading(true);
+      await loadOrganizations();
+      await loadData();
+      showToast(`Organization "${name}" created successfully!`);
+    }
+  };
+
+  // Authenticate user check
+  const initAuth = async (): Promise<boolean> => {
+    try {
+      const token = ApiClient.getToken();
+      if (!token) {
+        setIsAuthModalOpen(true);
+        setIsLoading(false);
+        return false;
       }
       const me = await ApiClient.getMe();
       if (me.user?.displayName) {
         setUserName(me.user.displayName);
+        setUserEmail(me.user.email);
       }
+      return true;
     } catch (e) {
-      // Re-login on token expiration
-      try {
-        await ApiClient.login('ashok@advaitlabs.com', 'password123');
-      } catch (err) {
-        console.error('Auth initialization error', err);
-      }
+      ApiClient.logout();
+      setIsAuthModalOpen(true);
+      setIsLoading(false);
+      return false;
     }
+  };
+
+  const handleSignOut = () => {
+    ApiClient.logout();
+    setOrganizations([]);
+    setReviews([]);
+    setLocations([]);
+    setGoogleStatus(null);
+    setUserEmail('');
+    setUserName('Guest');
+    setIsAuthModalOpen(true);
+    showToast('Signed out successfully');
+  };
+
+  const handleAuthSuccess = async (userData: any) => {
+    setIsAuthModalOpen(false);
+    setIsLoading(true);
+    if (userData.user?.displayName) {
+      setUserName(userData.user.displayName);
+      setUserEmail(userData.user.email);
+    }
+    await loadOrganizations();
+    await loadData();
+    showToast(`Welcome back, ${userData.user?.displayName || 'User'}!`);
   };
 
   const loadData = useCallback(async () => {
@@ -88,8 +158,11 @@ export default function HomePage() {
   }, [statusFilter, selectedLocationId, ratingFilter, searchQuery]);
 
   useEffect(() => {
-    initAuth().then(() => {
-      loadData();
+    initAuth().then(async (isAuthenticated) => {
+      if (isAuthenticated) {
+        await loadOrganizations();
+        await loadData();
+      }
     });
   }, [loadData]);
 
@@ -202,6 +275,12 @@ export default function HomePage() {
         isSyncing={isSyncing}
         googleStatus={googleStatus}
         userName={userName}
+        userEmail={userEmail}
+        organizations={organizations}
+        currentOrganizationId={currentOrgId}
+        onSelectOrganization={handleSelectOrganization}
+        onCreateOrganization={handleCreateOrganization}
+        onSignOut={handleSignOut}
       />
 
       <div className="flex flex-1">
@@ -339,6 +418,12 @@ export default function HomePage() {
         draftId={feedbackModal.draftId}
         originalText={feedbackModal.originalText}
         onSubmit={handleSubmitFeedback}
+      />
+
+      {/* Authentication Modal (Sign In / Register) */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onSuccess={handleAuthSuccess}
       />
     </div>
   );

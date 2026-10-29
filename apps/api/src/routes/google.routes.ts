@@ -3,6 +3,7 @@ import { prisma } from '@replyspark/db';
 import { connectLocationSchema } from '@replyspark/shared';
 import { authenticate } from '../middleware/auth.js';
 import { getGoogleBusinessProfileClient } from '../services/google/index.js';
+import { ENV } from '../config/env.js';
 
 export async function googleRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', authenticate);
@@ -19,6 +20,7 @@ export async function googleRoutes(fastify: FastifyInstance) {
 
     return reply.send({
       isConnected: Boolean(connection && connection.connectionStatus === 'CONNECTED'),
+      providerMode: ENV.GOOGLE_PROVIDER_MODE,
       connection: connection ? {
         id: connection.id,
         accountName: connection.accountName,
@@ -27,6 +29,45 @@ export async function googleRoutes(fastify: FastifyInstance) {
         locationsCount: connection.locations.length,
         createdAt: connection.createdAt
       } : null
+    });
+  });
+
+  // Generate Google OAuth authorization URL for linking live business accounts
+  fastify.get('/oauth/url', async (request, reply) => {
+    const auth = request.auth!;
+    if (!ENV.GOOGLE_CLIENT_ID) {
+      return reply.code(400).send({
+        error: 'Misconfigured',
+        message: 'GOOGLE_CLIENT_ID is not configured in .env. Please configure your Google Cloud OAuth Client ID.'
+      });
+    }
+
+    const statePayload = {
+      organizationId: auth.organizationId,
+      userId: auth.userId,
+      timestamp: Date.now()
+    };
+    const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+
+    const scopes = [
+      'https://www.googleapis.com/auth/business.manage',
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile'
+    ];
+
+    const params = new URLSearchParams({
+      client_id: ENV.GOOGLE_CLIENT_ID,
+      redirect_uri: ENV.GOOGLE_REDIRECT_URI,
+      response_type: 'code',
+      scope: scopes.join(' '),
+      access_type: 'offline',
+      prompt: 'consent',
+      state
+    });
+
+    return reply.send({
+      url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
     });
   });
 
@@ -39,17 +80,24 @@ export async function googleRoutes(fastify: FastifyInstance) {
 
     // If in mock mode and no connection yet, auto-create a mock connection for seamless testing
     if (!connection) {
-      connection = await prisma.googleConnection.create({
-        data: {
-          organizationId: auth.organizationId,
-          googleSubjectId: `mock-sub-${Date.now()}`,
-          accountEmail: `${auth.email.split('@')[0]}.biz@gmail.com`,
-          accountName: 'Spark Hospitality Group',
-          encryptedRefreshToken: 'enc_mock_token_abc123',
-          grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
-          connectionStatus: 'CONNECTED'
-        }
-      });
+      if (ENV.GOOGLE_PROVIDER_MODE === 'mock') {
+        connection = await prisma.googleConnection.create({
+          data: {
+            organizationId: auth.organizationId,
+            googleSubjectId: `mock-sub-${Date.now()}`,
+            accountEmail: `${auth.email.split('@')[0]}.biz@gmail.com`,
+            accountName: 'Spark Hospitality Group',
+            encryptedRefreshToken: 'enc_mock_token_abc123',
+            grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
+            connectionStatus: 'CONNECTED'
+          }
+        });
+      } else {
+        return reply.code(400).send({
+          error: 'Not Connected',
+          message: 'No Google connection found. Please connect your Google account via OAuth first.'
+        });
+      }
     }
 
     const client = getGoogleBusinessProfileClient();
@@ -75,7 +123,32 @@ export async function googleRoutes(fastify: FastifyInstance) {
     }
 
     const client = getGoogleBusinessProfileClient();
-    const targetAccount = accountResourceName || 'accounts/acc-spark-group-001';
+    let targetAccount = accountResourceName;
+    if (!targetAccount) {
+      if (ENV.GOOGLE_PROVIDER_MODE === 'live') {
+        const accounts = await client.getAccounts(connection.encryptedRefreshToken);
+        if (accounts.length > 0) {
+          targetAccount = accounts[0].name;
+        } else {
+          return reply.send({
+            accountResourceName: null,
+            locations: [],
+            message: 'No Google Business Profile accounts found under this connected Google user.'
+          });
+        }
+      } else {
+        try {
+          const accounts = await client.getAccounts(connection.encryptedRefreshToken);
+          if (accounts.length > 0) {
+            targetAccount = accounts[0].name;
+          }
+        } catch (err) {
+          // Fallback to default mock account if fetching fails in mock mode
+        }
+        targetAccount = targetAccount || 'accounts/acc-spark-group-001';
+      }
+    }
+
     const locations = await client.getLocations(connection.encryptedRefreshToken, targetAccount);
 
     // Also get currently connected locations to show which ones are already active
@@ -86,8 +159,10 @@ export async function googleRoutes(fastify: FastifyInstance) {
     const connectedSet = new Set(connectedLocations.map(l => l.googleLocationResourceName));
 
     return reply.send({
+      accountResourceName: targetAccount,
       locations: locations.map(loc => ({
         ...loc,
+        accountResourceName: targetAccount,
         isAlreadyConnected: connectedSet.has(loc.locationName)
       }))
     });

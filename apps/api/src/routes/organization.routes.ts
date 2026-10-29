@@ -63,4 +63,78 @@ export async function organizationRoutes(fastify: FastifyInstance) {
       }))
     });
   });
+
+  // Create a new organization
+  fastify.post('/', async (request, reply) => {
+    const auth = request.auth!;
+    const { name } = (request.body as { name?: string }) || {};
+
+    if (!name || name.trim().length === 0) {
+      return reply.code(400).send({
+        error: 'Bad Request',
+        message: 'Organization name is required'
+      });
+    }
+
+    const org = await prisma.$transaction(async (tx) => {
+      const newOrg = await tx.organization.create({
+        data: {
+          name: name.trim()
+        }
+      });
+
+      await tx.organizationMember.create({
+        data: {
+          organizationId: newOrg.id,
+          userId: auth.userId,
+          role: 'OWNER',
+          status: 'ACTIVE'
+        }
+      });
+
+      // Seed standard initial preferences for the organization
+      await tx.aiPreference.createMany({
+        data: [
+          {
+            organizationId: newOrg.id,
+            ruleText: 'Maintain a warm, genuine, and hospitality-first tone.',
+            ruleCategory: 'TONE_STYLE',
+            status: 'ACTIVE',
+            createdBy: auth.userId,
+            approvedBy: auth.userId
+          },
+          {
+            organizationId: newOrg.id,
+            ruleText: 'Never promise refunds or monetary compensation publicly.',
+            ruleCategory: 'POLICY_SAFETY',
+            status: 'ACTIVE',
+            createdBy: auth.userId,
+            approvedBy: auth.userId
+          }
+        ]
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId: newOrg.id,
+          actorUserId: auth.userId,
+          action: 'ORGANIZATION_CREATED',
+          resourceType: 'ORGANIZATION',
+          resourceId: newOrg.id,
+          metadataJson: { name: newOrg.name }
+        }
+      });
+
+      return newOrg;
+    });
+
+    return reply.code(201).send({
+      organization: {
+        id: org.id,
+        name: org.name,
+        role: 'OWNER'
+      }
+    });
+  });
 }
+

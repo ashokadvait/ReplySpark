@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '@replyspark/db';
 import { loginSchema, registerSchema } from '@replyspark/shared';
 import { authenticate } from '../middleware/auth.js';
+import { ENV } from '../config/env.js';
 
 export async function authRoutes(fastify: FastifyInstance) {
   // Register
@@ -171,5 +172,110 @@ export async function authRoutes(fastify: FastifyInstance) {
         role: m.role
       }))
     });
+  });
+
+  // Google OAuth Callback (exchanges code for refresh token and links account)
+  fastify.get('/google/callback', async (request, reply) => {
+    const { code, state, error } = request.query as { code?: string; state?: string; error?: string };
+
+    if (error) {
+      return reply.redirect(`${ENV.WEB_URL}?google_error=${encodeURIComponent(error)}`);
+    }
+
+    if (!code || !state) {
+      return reply.redirect(`${ENV.WEB_URL}?google_error=missing_code_or_state`);
+    }
+
+    let stateData: { organizationId: string; userId: string };
+    try {
+      stateData = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
+    } catch {
+      return reply.redirect(`${ENV.WEB_URL}?google_error=invalid_state`);
+    }
+
+    try {
+      // Exchange code for tokens
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: ENV.GOOGLE_CLIENT_ID,
+          client_secret: ENV.GOOGLE_CLIENT_SECRET,
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: ENV.GOOGLE_REDIRECT_URI
+        })
+      });
+
+      if (!tokenRes.ok) {
+        const errText = await tokenRes.text();
+        return reply.redirect(`${ENV.WEB_URL}?google_error=${encodeURIComponent('Token exchange failed: ' + errText)}`);
+      }
+
+      const tokenData = await tokenRes.json();
+      const accessToken = tokenData.access_token;
+      const refreshToken = tokenData.refresh_token;
+
+      // Fetch user profile info
+      let profile: { sub?: string; email?: string; name?: string } = {};
+      try {
+        const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (profileRes.ok) {
+          profile = await profileRes.json();
+        }
+      } catch (err) {
+        // Fallback if userinfo fails
+      }
+
+      // Upsert GoogleConnection in Database
+      const existing = await prisma.googleConnection.findFirst({
+        where: { organizationId: stateData.organizationId }
+      });
+
+      if (existing) {
+        await prisma.googleConnection.update({
+          where: { id: existing.id },
+          data: {
+            googleSubjectId: profile.sub || existing.googleSubjectId || `google-sub-${Date.now()}`,
+            accountEmail: profile.email || existing.accountEmail,
+            accountName: profile.name || profile.email || existing.accountName,
+            encryptedRefreshToken: refreshToken || existing.encryptedRefreshToken,
+            grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
+            connectionStatus: 'CONNECTED',
+            tokenExpiresAt: tokenData.expires_in ? new Date(Date.now() + tokenData.expires_in * 1000) : null
+          }
+        });
+      } else {
+        await prisma.googleConnection.create({
+          data: {
+            organizationId: stateData.organizationId,
+            googleSubjectId: profile.sub || `google-sub-${Date.now()}`,
+            accountEmail: profile.email,
+            accountName: profile.name || profile.email || 'Google Business Account',
+            encryptedRefreshToken: refreshToken || '',
+            grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
+            connectionStatus: 'CONNECTED',
+            tokenExpiresAt: tokenData.expires_in ? new Date(Date.now() + tokenData.expires_in * 1000) : null
+          }
+        });
+      }
+
+      // Record audit log
+      await prisma.auditLog.create({
+        data: {
+          organizationId: stateData.organizationId,
+          actorUserId: stateData.userId,
+          action: 'GOOGLE_CONNECTED',
+          resourceType: 'GOOGLE_CONNECTION',
+          metadataJson: { accountEmail: profile.email }
+        }
+      });
+
+      return reply.redirect(`${ENV.WEB_URL}?connected=google`);
+    } catch (err: any) {
+      return reply.redirect(`${ENV.WEB_URL}?google_error=${encodeURIComponent(err.message || 'connection_failed')}`);
+    }
   });
 }

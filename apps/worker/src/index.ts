@@ -1,3 +1,6 @@
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import { Worker, Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import dotenv from 'dotenv';

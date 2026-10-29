@@ -16,5 +16,6 @@ export const ENV = {
   GOOGLE_PROVIDER_MODE: process.env.GOOGLE_PROVIDER_MODE || 'mock',
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:4000/api/v1/auth/google/callback'
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:4000/api/v1/auth/google/callback',
+  WEB_URL: process.env.WEB_URL || 'http://localhost:3000'
 };

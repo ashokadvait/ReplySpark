@@ -1,3 +1,6 @@
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
@@ -35,7 +38,8 @@ async function main() {
   // Allow empty JSON bodies on POST/PATCH
   fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
     try {
-      const json = body && body.trim().length > 0 ? JSON.parse(body) : {};
+      const str = typeof body === 'string' ? body : (body ? body.toString('utf8') : '');
+      const json = str.trim().length > 0 ? JSON.parse(str) : {};
       done(null, json);
     } catch (err: any) {
       done(err, undefined);

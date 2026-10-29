@@ -1,7 +1,7 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 export class ApiClient {
-  private static getToken(): string | null {
+  public static getToken(): string | null {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('replyspark_token');
   }
@@ -62,6 +62,23 @@ export class ApiClient {
     if (data.token) this.setToken(data.token);
     if (data.organization?.id) this.setSelectedOrgId(data.organization.id);
     return data;
+  }
+
+  public static async register(email: string, password: string, displayName: string, organizationName: string) {
+    const data = await this.request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, displayName, organizationName })
+    });
+    if (data.token) this.setToken(data.token);
+    if (data.organization?.id) this.setSelectedOrgId(data.organization.id);
+    return data;
+  }
+
+  public static logout() {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('replyspark_token');
+      localStorage.removeItem('replyspark_org_id');
+    }
   }
 
   public static async getMe() {
@@ -134,6 +151,23 @@ export class ApiClient {
     return this.request('/api/v1/google/status');
   }
 
+  public static async getGoogleOAuthUrl() {
+    return this.request<{ url: string }>('/api/v1/google/oauth/url');
+  }
+
+  // Organizations
+  public static async getOrganizations() {
+    return this.request<{ organizations: Array<{ id: string; name: string; role: string; locationsCount: number; reviewsCount: number; isCurrent: boolean }> }>('/api/v1/organizations');
+  }
+
+  public static async createOrganization(name: string) {
+    return this.request<{ organization: { id: string; name: string; role: string } }>('/api/v1/organizations', {
+      method: 'POST',
+      body: JSON.stringify({ name })
+    });
+  }
+
+  // Locations & Google
   public static async getLocations() {
     return this.request('/api/v1/organizations/locations');
   }

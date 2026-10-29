@@ -1,3 +1,4 @@
+import { ENV } from '../../config/env.js';
 import {
   GoogleAccountDto,
   GoogleLocationDto,
@@ -12,12 +13,15 @@ export class LiveGoogleBusinessProfileClient implements IGoogleBusinessProfileCl
   private baseReviewsUrl = 'https://mybusiness.googleapis.com/v4';
 
   private async getAccessToken(refreshToken: string): Promise<string> {
+    const clientId = ENV.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
+    const clientSecret = ENV.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
+
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID || '',
-        client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+        client_id: clientId,
+        client_secret: clientSecret,
         refresh_token: refreshToken,
         grant_type: 'refresh_token'
       })
@@ -32,6 +36,19 @@ export class LiveGoogleBusinessProfileClient implements IGoogleBusinessProfileCl
     return data.access_token;
   }
 
+  private parseGoogleError(status: number, errText: string): string {
+    try {
+      const json = JSON.parse(errText);
+      if (json.error?.code === 429 && errText.includes('DefaultRequestsPerMinutePerProject')) {
+        return 'Google Business Profile API quota is 0. Google sets newly enabled GBP APIs to 0 quota until the project is approved via the Google Business Profile API Access Request form. Please submit the access request in Google Cloud.';
+      }
+      if (json.error?.message) {
+        return json.error.message;
+      }
+    } catch {}
+    return errText;
+  }
+
   async getAccounts(refreshToken: string): Promise<GoogleAccountDto[]> {
     const accessToken = await this.getAccessToken(refreshToken);
     const res = await fetch(`${this.baseAccountUrl}/accounts`, {
@@ -39,7 +56,8 @@ export class LiveGoogleBusinessProfileClient implements IGoogleBusinessProfileCl
     });
 
     if (!res.ok) {
-      throw new Error(`Google GBP Accounts error: ${await res.text()}`);
+      const errText = await res.text();
+      throw new Error(`Google GBP Accounts error: ${this.parseGoogleError(res.status, errText)}`);
     }
 
     const data = await res.json();
@@ -62,7 +80,8 @@ export class LiveGoogleBusinessProfileClient implements IGoogleBusinessProfileCl
     );
 
     if (!res.ok) {
-      throw new Error(`Google GBP Locations error: ${await res.text()}`);
+      const errText = await res.text();
+      throw new Error(`Google GBP Locations error: ${this.parseGoogleError(res.status, errText)}`);
     }
 
     const data = await res.json();
