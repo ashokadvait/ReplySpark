@@ -158,8 +158,31 @@ export default function HomePage() {
   }, [statusFilter, selectedLocationId, ratingFilter, searchQuery]);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlToken = params.get('token');
+      const googleError = params.get('google_error');
+      const connected = params.get('connected');
+
+      if (urlToken) {
+        ApiClient.setToken(urlToken);
+        setIsAuthModalOpen(false);
+      }
+
+      if (googleError) {
+        showToast(`Google Sign-In failed: ${decodeURIComponent(googleError)}`);
+      } else if (connected === 'google') {
+        showToast('Google Business Profile connected successfully!');
+      }
+
+      if (urlToken || googleError || connected) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+
     initAuth().then(async (isAuthenticated) => {
       if (isAuthenticated) {
+        setIsAuthModalOpen(false);
         await loadOrganizations();
         await loadData();
       }
@@ -168,6 +191,11 @@ export default function HomePage() {
 
   // Sync Google Reviews
   const handleSync = async () => {
+    if (locations.length === 0) {
+      showToast('No locations connected yet. Redirecting to Google & Locations tab to connect your location.');
+      setCurrentTab('locations');
+      return;
+    }
     setIsSyncing(true);
     try {
       const res = await ApiClient.syncReviews(selectedLocationId !== 'ALL' ? selectedLocationId : undefined);
@@ -390,16 +418,33 @@ export default function HomePage() {
               ) : (
                 <div className="py-20 text-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/20 p-8">
                   <Sparkles className="w-8 h-8 text-slate-600 mx-auto mb-3" />
-                  <h3 className="text-sm font-semibold text-slate-300 mb-1">No reviews found</h3>
-                  <p className="text-xs text-slate-500 mb-4">
-                    No customer reviews match your active filter criteria.
-                  </p>
-                  <button
-                    onClick={handleSync}
-                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
-                  >
-                    Sync Latest Reviews from Google
-                  </button>
+                  {locations.length === 0 ? (
+                    <>
+                      <h3 className="text-sm font-semibold text-slate-300 mb-1">No Locations Connected Yet</h3>
+                      <p className="text-xs text-slate-500 mb-4 max-w-sm mx-auto">
+                        Your Google account is connected! Now discover and connect your Google Business Profile location to start managing reviews.
+                      </p>
+                      <button
+                        onClick={() => setCurrentTab('locations')}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-500/20"
+                      >
+                        Go to Google &amp; Locations
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="text-sm font-semibold text-slate-300 mb-1">No reviews found</h3>
+                      <p className="text-xs text-slate-500 mb-4">
+                        No customer reviews match your active filter criteria.
+                      </p>
+                      <button
+                        onClick={handleSync}
+                        className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
+                      >
+                        Sync Latest Reviews from Google
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>

@@ -85,6 +85,10 @@ export class ApiClient {
     return this.request('/api/v1/auth/me');
   }
 
+  public static async getGoogleLoginUrl() {
+    return this.request<{ url: string }>('/api/v1/auth/google/url');
+  }
+
   // Reviews
   public static async getReviews(params: {
     status?: string;

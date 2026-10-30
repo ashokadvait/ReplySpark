@@ -144,23 +144,47 @@ export function LocationsView() {
       {/* Notifications */}
       {bannerNotice && (
         <div
-          className={`p-4 rounded-2xl border flex items-start justify-between gap-3 ${
+          className={`p-4 rounded-2xl border flex flex-col md:flex-row md:items-start justify-between gap-3 ${
             bannerNotice.type === 'success'
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
           }`}
         >
-          <div className="flex items-center gap-2 text-sm font-medium">
-            {bannerNotice.type === 'success' ? (
-              <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
-            ) : (
-              <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              {bannerNotice.type === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
+              ) : (
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
+              )}
+              <span>{bannerNotice.message}</span>
+            </div>
+
+            {bannerNotice.message.includes('quota is 0') && (
+              <div className="mt-3 p-3.5 rounded-xl bg-slate-900/90 border border-slate-700/80 text-xs text-slate-300 space-y-2.5">
+                <p className="font-semibold text-amber-300">
+                  Google requires manual approval for Business Profile API quota:
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href="https://support.google.com/business/contact/api_default"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition shadow-sm"
+                  >
+                    <span>Submit Google API Access Request</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  💡 <strong>Instant local testing:</strong> Change <code className="bg-slate-800 px-1.5 py-0.5 rounded text-indigo-300">GOOGLE_PROVIDER_MODE=mock</code> in your <code className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-200">.env</code> to test locations, real Gemini AI replies, and approval workflows right now without waiting for Google.
+                </p>
+              </div>
             )}
-            <span>{bannerNotice.message}</span>
           </div>
           <button
             onClick={() => setBannerNotice(null)}
-            className="text-xs opacity-70 hover:opacity-100 cursor-pointer font-bold"
+            className="text-xs opacity-70 hover:opacity-100 cursor-pointer font-bold self-start"
           >
             ✕
           </button>

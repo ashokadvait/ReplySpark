@@ -174,7 +174,44 @@ export async function authRoutes(fastify: FastifyInstance) {
     });
   });
 
-  // Google OAuth Callback (exchanges code for refresh token and links account)
+  // Generate Google OAuth URL for direct Login with Google / Gmail
+  fastify.get('/google/url', async (request, reply) => {
+    if (!ENV.GOOGLE_CLIENT_ID) {
+      return reply.code(400).send({
+        error: 'Misconfigured',
+        message: 'GOOGLE_CLIENT_ID is not configured in .env. Please configure your Google Cloud OAuth Client ID.'
+      });
+    }
+
+    const statePayload = {
+      action: 'login',
+      timestamp: Date.now()
+    };
+    const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+
+    const scopes = [
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/business.manage'
+    ];
+
+    const params = new URLSearchParams({
+      client_id: ENV.GOOGLE_CLIENT_ID,
+      redirect_uri: ENV.GOOGLE_REDIRECT_URI,
+      response_type: 'code',
+      scope: scopes.join(' '),
+      access_type: 'offline',
+      prompt: 'consent',
+      state
+    });
+
+    return reply.send({
+      url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+    });
+  });
+
+  // Google OAuth Callback (exchanges code for refresh token, creates/logs in user, and connects Google Business Profile)
   fastify.get('/google/callback', async (request, reply) => {
     const { code, state, error } = request.query as { code?: string; state?: string; error?: string };
 
@@ -186,7 +223,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       return reply.redirect(`${ENV.WEB_URL}?google_error=missing_code_or_state`);
     }
 
-    let stateData: { organizationId: string; userId: string };
+    let stateData: { action?: string; organizationId?: string; userId?: string };
     try {
       stateData = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
     } catch {
@@ -217,7 +254,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       const refreshToken = tokenData.refresh_token;
 
       // Fetch user profile info
-      let profile: { sub?: string; email?: string; name?: string } = {};
+      let profile: { sub?: string; email?: string; name?: string; picture?: string } = {};
       try {
         const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${accessToken}` }
@@ -229,7 +266,153 @@ export async function authRoutes(fastify: FastifyInstance) {
         // Fallback if userinfo fails
       }
 
-      // Upsert GoogleConnection in Database
+      if (!profile.email) {
+        return reply.redirect(`${ENV.WEB_URL}?google_error=${encodeURIComponent('Failed to retrieve email from Google profile')}`);
+      }
+
+      // Check if this is a Login flow (or no prior organizationId)
+      if (stateData.action === 'login' || !stateData.organizationId) {
+        let user = await prisma.user.findUnique({
+          where: { email: profile.email },
+          include: {
+            memberships: {
+              where: { status: 'ACTIVE' },
+              include: { organization: true }
+            }
+          }
+        });
+
+        let userId: string;
+        let orgId: string;
+
+        if (!user) {
+          const salt = await bcrypt.genSalt(10);
+          const passwordHash = await bcrypt.hash(Math.random().toString(36), salt);
+          const displayName = profile.name || profile.email.split('@')[0];
+          const orgName = profile.name ? `${profile.name}'s Organization` : 'My Organization';
+
+          const created = await prisma.$transaction(async (tx) => {
+            const newUser = await tx.user.create({
+              data: {
+                email: profile.email!,
+                displayName,
+                passwordHash
+              }
+            });
+
+            const newOrg = await tx.organization.create({
+              data: {
+                name: orgName
+              }
+            });
+
+            await tx.organizationMember.create({
+              data: {
+                organizationId: newOrg.id,
+                userId: newUser.id,
+                role: 'OWNER',
+                status: 'ACTIVE'
+              }
+            });
+
+            await tx.aiPreference.createMany({
+              data: [
+                {
+                  organizationId: newOrg.id,
+                  ruleText: 'Maintain a warm, genuine, and hospitality-first tone.',
+                  ruleCategory: 'TONE_STYLE',
+                  status: 'ACTIVE',
+                  createdBy: newUser.id,
+                  approvedBy: newUser.id
+                },
+                {
+                  organizationId: newOrg.id,
+                  ruleText: 'Never promise refunds or monetary compensation publicly.',
+                  ruleCategory: 'POLICY_SAFETY',
+                  status: 'ACTIVE',
+                  createdBy: newUser.id,
+                  approvedBy: newUser.id
+                }
+              ]
+            });
+
+            return { user: newUser, org: newOrg };
+          });
+
+          userId = created.user.id;
+          orgId = created.org.id;
+        } else {
+          userId = user.id;
+          if (user.memberships.length > 0) {
+            orgId = user.memberships[0].organizationId;
+          } else {
+            const newOrg = await prisma.organization.create({
+              data: {
+                name: user.displayName ? `${user.displayName}'s Organization` : 'My Organization'
+              }
+            });
+            await prisma.organizationMember.create({
+              data: {
+                organizationId: newOrg.id,
+                userId: user.id,
+                role: 'OWNER',
+                status: 'ACTIVE'
+              }
+            });
+            orgId = newOrg.id;
+          }
+        }
+
+        // Upsert Google Connection for this organization
+        if (orgId) {
+          const existingConn = await prisma.googleConnection.findFirst({
+            where: { organizationId: orgId }
+          });
+
+          if (existingConn) {
+            await prisma.googleConnection.update({
+              where: { id: existingConn.id },
+              data: {
+                googleSubjectId: profile.sub || existingConn.googleSubjectId || `google-sub-${Date.now()}`,
+                accountEmail: profile.email,
+                accountName: profile.name || profile.email,
+                encryptedRefreshToken: refreshToken || existingConn.encryptedRefreshToken,
+                grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
+                connectionStatus: 'CONNECTED',
+                tokenExpiresAt: tokenData.expires_in ? new Date(Date.now() + tokenData.expires_in * 1000) : null
+              }
+            });
+          } else {
+            await prisma.googleConnection.create({
+              data: {
+                organizationId: orgId,
+                googleSubjectId: profile.sub || `google-sub-${Date.now()}`,
+                accountEmail: profile.email,
+                accountName: profile.name || profile.email,
+                encryptedRefreshToken: refreshToken || '',
+                grantedScopes: ['https://www.googleapis.com/auth/business.manage'],
+                connectionStatus: 'CONNECTED',
+                tokenExpiresAt: tokenData.expires_in ? new Date(Date.now() + tokenData.expires_in * 1000) : null
+              }
+            });
+          }
+
+          await prisma.auditLog.create({
+            data: {
+              organizationId: orgId,
+              actorUserId: userId,
+              action: 'GOOGLE_CONNECTED',
+              resourceType: 'GOOGLE_CONNECTION',
+              metadataJson: { accountEmail: profile.email, loginFlow: true }
+            }
+          });
+        }
+
+        const token = fastify.jwt.sign({ userId }, { expiresIn: '7d' });
+        return reply.redirect(`${ENV.WEB_URL}?token=${encodeURIComponent(token)}&connected=google`);
+      }
+
+      // Existing linking flow (when already logged in from within dashboard)
       const existing = await prisma.googleConnection.findFirst({
         where: { organizationId: stateData.organizationId }
       });
@@ -250,7 +433,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       } else {
         await prisma.googleConnection.create({
           data: {
-            organizationId: stateData.organizationId,
+            organizationId: stateData.organizationId!,
             googleSubjectId: profile.sub || `google-sub-${Date.now()}`,
             accountEmail: profile.email,
             accountName: profile.name || profile.email || 'Google Business Account',
@@ -265,7 +448,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       // Record audit log
       await prisma.auditLog.create({
         data: {
-          organizationId: stateData.organizationId,
+          organizationId: stateData.organizationId!,
           actorUserId: stateData.userId,
           action: 'GOOGLE_CONNECTED',
           resourceType: 'GOOGLE_CONNECTION',
